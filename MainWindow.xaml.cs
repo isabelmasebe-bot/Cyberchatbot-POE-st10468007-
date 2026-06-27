@@ -228,9 +228,14 @@ namespace Cyberchatbot_POE
         {
             string title = input.Replace("add task", "").Replace("new task", "").Trim();
             if (string.IsNullOrEmpty(title)) title = "Untitled Task";
-            AddTaskToDB(title, $"Cybersecurity task: {title}", null);
+            AddTaskDB(title, $"Cybersecurity task: {title}", null);
             LogActivity($"Task Added: {title}");
             AddBotMessage($"✅ Task added: {title}");
+        }
+
+        private void AddTaskDB(string title, string v, object value)
+        {
+            throw new NotImplementedException();
         }
 
         private void ShowTasks() { /* same as previous versions */ }
