@@ -1,5 +1,7 @@
-﻿using System;
+﻿using MySql.Data.MySqlClient;
+using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Speech.Recognition;
 using System.Speech.Synthesis;
@@ -7,7 +9,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using MySql.Data.MySqlClient;
 
 namespace Cyberchatbot_POE
 {
@@ -19,7 +20,7 @@ namespace Cyberchatbot_POE
         private string userName = "User";
         private bool isNameAsked = false;
 
-        // Quiz Variables (Task 2)
+        // Quiz (Task 2)
         private bool isInQuizMode = false;
         private int currentQuestionIndex = 0;
         private int quizScore = 0;
@@ -48,6 +49,7 @@ namespace Cyberchatbot_POE
             if (activityLog.Count > 10) activityLog.RemoveAt(0);
         }
 
+        // ====================== DATABASE METHODS (FULL) ======================
         private void TestDatabaseConnection()
         {
             try
@@ -60,10 +62,93 @@ namespace Cyberchatbot_POE
             }
             catch (Exception ex)
             {
-                AddBotMessage($"❌ DB Error: {ex.Message}");
+                AddBotMessage($"❌ Database Error: {ex.Message}");
             }
         }
 
+        private void AddTaskToDB(string title, string description, DateTime? reminder)
+        {
+            using (var conn = new MySqlConnection(ConnectionString))
+            {
+                conn.Open();
+                string sql = "INSERT INTO tasks (title, description, reminder) VALUES (@title, @desc, @reminder)";
+                using (var cmd = new MySqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@title", title);
+                    cmd.Parameters.AddWithValue("@desc", description);
+                    cmd.Parameters.AddWithValue("@reminder", (object)reminder ?? DBNull.Value);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private List<TaskModel> GetActiveTasks()
+        {
+            var list = new List<TaskModel>();
+            using (var conn = new MySqlConnection(ConnectionString))
+            {
+                conn.Open();
+                string sql = "SELECT * FROM tasks WHERE is_completed = 0 ORDER BY created_at DESC";
+                using (var cmd = new MySqlCommand(sql, conn))
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        list.Add(new TaskModel
+                        {
+                            Id = reader.GetInt32("id"),
+                            Title = reader.GetString("title"),
+                            Reminder = reader.IsDBNull("reminder") ? null : reader.GetDateTime("reminder")
+                        });
+                    }
+                }
+            }
+            return list;
+        }
+
+        private void MarkTaskAsCompleted(int id)
+        {
+            using (var conn = new MySqlConnection(ConnectionString))
+            {
+                conn.Open();
+                string sql = "UPDATE tasks SET is_completed = 1 WHERE id = @id";
+                using (var cmd = new MySqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private void DeleteTask(int id)
+        {
+            using (var conn = new MySqlConnection(ConnectionString))
+            {
+                conn.Open();
+                string sql = "DELETE FROM tasks WHERE id = @id";
+                using (var cmd = new MySqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private void SetReminderOnLatestTask(DateTime reminderDate)
+        {
+            using (var conn = new MySqlConnection(ConnectionString))
+            {
+                conn.Open();
+                string sql = "UPDATE tasks SET reminder = @rem WHERE id = (SELECT id FROM tasks ORDER BY created_at DESC LIMIT 1)";
+                using (var cmd = new MySqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@rem", reminderDate);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        // ====================== RESPONSES & PROCESSING ======================
         private void InitializeResponses()
         {
             responses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -84,7 +169,6 @@ namespace Cyberchatbot_POE
             AddUserMessage(input);
             string lower = input.ToLower().Trim();
 
-            // Name Handling
             if (isNameAsked || lower.StartsWith("my name is") || lower.StartsWith("i am ") || lower.StartsWith("call me "))
             {
                 if (lower.StartsWith("my name is")) userName = input.Substring(11).Trim();
@@ -109,7 +193,6 @@ namespace Cyberchatbot_POE
                 return;
             }
 
-            // Task 2: Quiz
             if (lower.Contains("start quiz") || lower.Contains("play quiz"))
             {
                 StartQuiz();
@@ -123,19 +206,12 @@ namespace Cyberchatbot_POE
                 return;
             }
 
-            // Task 1: Task Assistant
-            if (ContainsAny(lower, new[] { "add task", "new task" }))
-                HandleAddTask(input);
-            else if (ContainsAny(lower, new[] { "show tasks", "view tasks", "my tasks" }))
-                ShowTasks();
-            else if (ContainsAny(lower, new[] { "complete", "done task", "mark done" }))
-                HandleCompleteTask();
-            else if (ContainsAny(lower, new[] { "delete task", "remove task" }))
-                HandleDeleteTask();
-            else if (ContainsAny(lower, new[] { "remind me", "set reminder" }))
-                HandleReminder(input);
-            else if (ContainsAny(lower, new[] { "activity log", "show log", "what have you done" }))
-                ShowActivityLog();
+            if (ContainsAny(lower, new[] { "add task", "new task" })) HandleAddTask(input);
+            else if (ContainsAny(lower, new[] { "show tasks", "view tasks", "my tasks" })) ShowTasks();
+            else if (ContainsAny(lower, new[] { "complete", "done task", "mark done" })) HandleCompleteTask();
+            else if (ContainsAny(lower, new[] { "delete task", "remove task" })) HandleDeleteTask();
+            else if (ContainsAny(lower, new[] { "remind me", "set reminder" })) HandleReminder(input);
+            else if (ContainsAny(lower, new[] { "activity log", "show log", "what have you done" })) ShowActivityLog();
             else
             {
                 string response = GenerateResponse(lower);
@@ -160,7 +236,7 @@ namespace Cyberchatbot_POE
             return keywords.Any(k => input.Contains(k));
         }
 
-        // ====================== TASK 2: QUIZ ======================
+        // ====================== QUIZ (Task 2) ======================
         private class QuizQuestion
         {
             public string QuestionText { get; set; }
@@ -175,7 +251,7 @@ namespace Cyberchatbot_POE
             {
                 new QuizQuestion { QuestionText = "What should you do if you receive an email asking for your password?", Options = new[] {"A) Reply", "B) Delete", "C) Report as phishing", "D) Ignore"}, CorrectIndex = 2, Explanation = "Reporting helps prevent scams." },
                 new QuizQuestion { QuestionText = "True or False: Using the same password everywhere is safe.", Options = new[] {"True", "False"}, CorrectIndex = 1, Explanation = "Always use unique passwords." },
-                // Add more questions here...
+                new QuizQuestion { QuestionText = "What does 2FA stand for?", Options = new[] {"A) Two Factor Authentication", "B) Two Firewalls Active"}, CorrectIndex = 0, Explanation = "Two-Factor Authentication adds extra security." }
             };
         }
 
@@ -193,7 +269,7 @@ namespace Cyberchatbot_POE
         {
             if (currentQuestionIndex >= quizQuestions.Count) { EndQuiz(); return; }
             var q = quizQuestions[currentQuestionIndex];
-            string msg = $"**Q{currentQuestionIndex + 1}:** {q.QuestionText}\n";
+            string msg = $"**Question {currentQuestionIndex + 1}:** {q.QuestionText}\n\n";
             foreach (var opt in q.Options) msg += opt + "\n";
             AddBotMessage(msg);
         }
@@ -223,29 +299,62 @@ namespace Cyberchatbot_POE
             AddBotMessage($"🏆 Quiz Finished! Score: {quizScore}/{quizQuestions.Count} ({percent:F1}%)");
         }
 
-        // ====================== TASK 1: TASK ASSISTANT ======================
+        // ====================== TASK ASSISTANT (Task 1) ======================
         private void HandleAddTask(string input)
         {
             string title = input.Replace("add task", "").Replace("new task", "").Trim();
             if (string.IsNullOrEmpty(title)) title = "Untitled Task";
-            AddTaskDB(title, $"Cybersecurity task: {title}", null);
+            AddTaskToDB(title, $"Cybersecurity task: {title}", null);
             LogActivity($"Task Added: {title}");
             AddBotMessage($"✅ Task added: {title}");
         }
 
-        private void AddTaskDB(string title, string v, object value)
+        private void ShowTasks()
         {
-            throw new NotImplementedException();
+            var tasks = GetActiveTasks();
+            if (tasks.Count == 0)
+            {
+                AddBotMessage("You have no pending tasks.");
+                return;
+            }
+            string msg = "📋 Your Active Tasks:\n";
+            foreach (var t in tasks)
+            {
+                string rem = t.Reminder.HasValue ? $" (Reminder: {t.Reminder.Value:dd MMM})" : "";
+                msg += $"- {t.Title}{rem}\n";
+            }
+            AddBotMessage(msg);
         }
 
-        private void ShowTasks() { /* same as previous versions */ }
-        private void HandleCompleteTask() { /* same */ }
-        private void HandleDeleteTask() { /* same */ }
-        private void HandleReminder(string input) { /* same */ }
+        private void HandleCompleteTask()
+        {
+            var tasks = GetActiveTasks();
+            if (tasks.Count == 0) return;
+            MarkTaskAsCompleted(tasks[0].Id);
+            LogActivity($"Task Completed: {tasks[0].Title}");
+            AddBotMessage($"✅ Task '{tasks[0].Title}' marked as completed!");
+        }
 
-        // DB Methods (AddTaskToDB, GetActiveTasks, etc.) - same as before
+        private void HandleDeleteTask()
+        {
+            var tasks = GetActiveTasks();
+            if (tasks.Count == 0) return;
+            DeleteTask(tasks[0].Id);
+            LogActivity($"Task Deleted: {tasks[0].Title}");
+            AddBotMessage("🗑️ Task deleted.");
+        }
 
-        // ====================== TASK 4: ACTIVITY LOG ======================
+        private void HandleReminder(string input)
+        {
+            int days = 7;
+            var digits = new string(input.Where(char.IsDigit).ToArray());
+            if (int.TryParse(digits, out int d) && d > 0) days = d;
+            SetReminderOnLatestTask(DateTime.Now.AddDays(days));
+            LogActivity($"Reminder Set for {days} days");
+            AddBotMessage($"⏰ Reminder set for {days} days.");
+        }
+
+        // ====================== ACTIVITY LOG (Task 4) ======================
         private void ShowActivityLog()
         {
             LogActivity("Activity Log Viewed");
@@ -254,7 +363,7 @@ namespace Cyberchatbot_POE
                 AddBotMessage("No activities yet.");
                 return;
             }
-            string log = "📜 **Activity Log** (Recent):\n\n";
+            string log = "📜 **Recent Activity Log**\n\n";
             foreach (var entry in activityLog.OrderByDescending(a => a.Timestamp))
             {
                 log += $"[{entry.Timestamp:HH:mm}] {entry.Action}\n";
@@ -269,12 +378,57 @@ namespace Cyberchatbot_POE
         }
 
         // ====================== GUI HELPERS ======================
-        private void AddUserMessage(string msg) { /* same as before */ }
-        private void AddBotMessage(string msg) { /* same as before */ }
-        private void Speak(string text) { speaker?.SpeakAsync(text); }
+        private void AddUserMessage(string msg)
+        {
+            var bubble = new Border
+            {
+                Background = Brushes.Blue,           // User Color: Blue
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(12),
+                Margin = new Thickness(5),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                MaxWidth = 400
+            };
+            bubble.Child = new TextBlock { Text = msg, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap };
+            ChatPanel.Children.Add(bubble);
+            ChatScroll.ScrollToEnd();
+        }
 
-        private void InitializeVoiceRecognition() { /* same */ }
-        private void Recognizer_SpeechRecognized(object sender, SpeechRecognizedEventArgs e) { /* same */ }
+        private void AddBotMessage(string msg)
+        {
+            var bubble = new Border
+            {
+                Background = Brushes.Green,          // Bot Color: Green
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(12),
+                Margin = new Thickness(5),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                MaxWidth = 400
+            };
+            bubble.Child = new TextBlock { Text = msg, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap };
+            ChatPanel.Children.Add(bubble);
+            ChatScroll.ScrollToEnd();
+        }
+
+        private void Speak(string text) => speaker?.SpeakAsync(text);
+
+        private void InitializeVoiceRecognition()
+        {
+            speaker = new SpeechSynthesizer();
+            try
+            {
+                recognizer = new SpeechRecognitionEngine();
+                recognizer.SetInputToDefaultAudioDevice();
+                recognizer.LoadGrammar(new DictationGrammar());
+                recognizer.SpeechRecognized += Recognizer_SpeechRecognized;
+            }
+            catch { AddBotMessage("Voice recognition unavailable."); }
+        }
+
+        private void Recognizer_SpeechRecognized(object sender, SpeechRecognizedEventArgs e)
+        {
+            Dispatcher.Invoke(() => AddUserMessage(e.Result.Text));
+        }
 
         private void ShowWelcomeMessage()
         {
@@ -298,7 +452,6 @@ namespace Cyberchatbot_POE
             LogActivity("Chat Cleared");
             ShowWelcomeMessage();
         }
-
         private void VoiceButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -310,6 +463,25 @@ namespace Cyberchatbot_POE
         }
     }
 
-    public class TaskModel { public int Id { get; set; } public string Title { get; set; } public DateTime? Reminder { get; set; } }
-    public class QuizQuestion { /* as above */ }
+    // Models
+    public class TaskModel
+    {
+        public int Id { get; set; }
+        public string Title { get; set; }
+        public DateTime? Reminder { get; set; }
+    }
+
+    public class QuizQuestion
+    {
+        public string QuestionText { get; set; }
+        public string[] Options { get; set; }
+        public int CorrectIndex { get; set; }
+        public string Explanation { get; set; }
+    }
+
+    public class ActivityLogEntry
+    {
+        public DateTime Timestamp { get; set; }
+        public string Action { get; set; }
+    }
 }
